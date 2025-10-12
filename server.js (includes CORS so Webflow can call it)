@@ -1,0 +1,105 @@
+import 'dotenv/config';
+import express from 'express';
+import fetch from 'node-fetch';
+import cors from 'cors';
+
+const app = express();
+app.use(express.json());
+
+// Allow your site(s) to call this API:
+const allowed = [
+  'https://www.sarazeneditions.com',   // your live site
+  'https://preview.webflow.com'        // Webflow Designer/preview (optional)
+];
+app.use(cors({
+  origin: (origin, cb) => {
+    // allow no-origin (e.g., server-to-server) and allowed domains
+    if (!origin || allowed.some(a => origin.startsWith(a))) return cb(null, true);
+    return cb(new Error('Not allowed by CORS'));
+  }
+}));
+
+// --- Price Guard: fetch live price from your site ---
+app.get('/api/price', async (req, res) => {
+  try {
+    const size = (req.query.size || '').toLowerCase();
+    if (!size) return res.status(400).json({ error: 'Missing size param' });
+
+    const url = 'https://www.sarazeneditions.com/canvas-gallery-wraps';
+    const html = await (await fetch(url, { headers: { 'user-agent': 'SarazenAssistant/1.0' }})).text();
+
+    // Look for the size token and the next $amount nearby
+    const token = size.replace(/\s+/g, '').replace(/"/g, '');
+    const re = new RegExp(`(?:${token.replace('x', '\\s*[×x]\\s*')})([\\s\\S]{0,500})\\$(\\d{2,4}(?:\\.\\d{2})?)`, 'i');
+    const m = html.match(re);
+
+    // Fallback: find first $ after the token
+    let price = null;
+    if (m) price = m[2];
+    else {
+      const i = html.toLowerCase().indexOf(token);
+      if (i >= 0) {
+        const tail = html.slice(i, i + 800);
+        const f = tail.match(/\$(\d{2,4}(?:\.\d{2})?)/);
+        if (f) price = f[1];
+      }
+    }
+
+    res.json({
+      size,
+      price: price ? Number(price) : null,
+      source: url,
+      checkedAt: new Date().toISOString(),
+      note: price ? 'Live price parsed from site.' : 'Price not found—page structure may have changed.'
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Price lookup failed' });
+  }
+});
+
+// --- Chat endpoint: streams model output ---
+app.post('/api/assistant', async (req, res) => {
+  try {
+    const msgs = req.body?.messages || [];
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.1',
+        stream: true,
+        messages: [
+          {
+            role: 'system',
+            content:
+`You are Sarazen Editions Print Advisor, a professional print-production assistant for artist Mark Sarazen.
+- Specialize in fine-art giclée printing, archival scanning, color management.
+- Use the paper giclée price formula: length x width x 0.16 (USD).
+- Offer guidance on gallery wraps (PremierArt Duravel Satin Canvas), Hahnemühle/Arches papers, Canon iPF4100 settings, soft-proofing.
+- Prefer the live site price (via /api/price?size=<WxH>) when available over the formula.
+- Be precise about sizes (e.g., 16×20 vs 20×24) and show calculations.`
+          },
+          ...msgs
+        ]
+      })
+    });
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+
+    for await (const chunk of r.body) res.write(chunk);
+    res.end();
+  } catch (e) {
+    console.error(e);
+    res.status(500).end();
+  }
+});
+
+// Basic healthcheck
+app.get('/', (_, res) => res.send('Sarazen Assistant is running'));
+const port = process.env.PORT || 10000; // Render often assigns a port
+app.listen(port, () => console.log(`Listening on :${port}`));
