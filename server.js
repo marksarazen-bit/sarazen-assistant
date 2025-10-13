@@ -40,6 +40,9 @@ app.get("/health", (_req, res) =>
 // --- OpenAI client (reads OPENAI_API_KEY from env) ---
 const openai = new OpenAI();
 
+const DROPBOX_URL = "https://www.sarazeneditions.com/file-submissions";
+
+
 // --- Advisor instructions (replicates your GPT behavior) ---
 const instructions = `
 You are Sarazen Editions Print, Scan and Web Design Advisor, a professional production assistant for artist Mark Sarazen.
